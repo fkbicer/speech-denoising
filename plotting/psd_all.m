@@ -17,17 +17,10 @@ names = {
     'Babble (5 dB)'
     'Street (5 dB)'
 };
-
-% Load clean once
 [xc, fs] = audioread(files{1});
-
-% Use same FFT length for all signals (fair comparison)
 Nfft = 65536;  % power of 2, fixed
-
-% Frequency axis (0..fs/2)
 f = (0:(Nfft/2)) * (fs/Nfft);
 
-% Clean spectrum
 Xc = fft(xc, Nfft);
 MagC = abs(Xc(1:Nfft/2+1));
 MagC_dB = 20*log10(MagC + 1e-12);
@@ -46,7 +39,7 @@ for k = 2:numel(files)
     plot(f, MagC_dB); hold on;
     plot(f, Mag_dB);
     grid on;
-    xlim([0 8000]); % Nyquist = 8000 Hz
+    xlim([0 8000]); 
     xlabel('Frequency (Hz)');
     ylabel('Magnitude (dB)');
     title(['FFT Magnitude: Clean vs ' names{k}]);

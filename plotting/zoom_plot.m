@@ -18,8 +18,8 @@ names = {
     'Street (5 dB)'
 };
 
-win_sec = 0.05;                 % 50 ms
-start_sec = 1.00;               % 1. saniyeden itibaren bak (istediğin yere çekebilirsin)
+win_sec = 0.05;               
+start_sec = 1.00;               
 
 for k = 1:numel(files)
     [x, fs] = audioread(files{k});
@@ -36,7 +36,6 @@ for k = 1:numel(files)
     ylabel('Amplitude');
     title(['Zoomed Time Domain (', num2str(win_sec*1000), ' ms) - ' names{k}]);
 
-    % Otomatik okunur y-scale (çok faydalı)
     ymax = max(abs(x(i0:i1)));
     if ymax > 0
         ylim([-1.1*ymax 1.1*ymax]);

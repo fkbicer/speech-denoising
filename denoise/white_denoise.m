@@ -1,70 +1,90 @@
-function generate_report_plots(s_clean, s_noisy, s_denoised, fs, noise_name)
-    % Calculate SNR based on Task 5 formula
-    snr_pre = 10 * log10(sum(s_clean.^2) / sum((s_clean - s_noisy).^2));
-    snr_post = 10 * log10(sum(s_clean.^2) / sum((s_clean - s_denoised.^2)));
-    gain = snr_post - snr_pre;
+clc; clear; close all;
 
-    fig = figure('Name', ['Report Analysis - ' noise_name], 'Color', 'w', 'Position', [50 50 1200 900]);
-    t = (0:length(s_clean)-1)/fs;
+% 1. SETUP & LOADING (Task 1)
+fs_target = 16000;
+file_clean = 'data/clean_speech.wav';
+file_noisy = 'data/clean_white_5dB.wav'; 
 
-    % Time domain waveforms
-    subplot(3, 2, 1);
-    plot(t, s_noisy, 'Color', [0.7 0.7 0.7]); hold on;
-    plot(t, s_clean, 'b', 'LineWidth', 0.8);
-    title([noise_name ' - Time Domain (Noisy vs Clean)']);
-    ylabel('Amplitude'); xlabel('Time (s)'); legend('Noisy', 'Clean');
-    grid on; xlim([1 1.5]);
+% Create output directories for better organization
+if ~exist('outputs/wavs', 'dir'), mkdir('outputs/wavs'); end
+if ~exist('outputs/plots', 'dir'), mkdir('outputs/plots'); end
 
-    subplot(3, 2, 2);
-    plot(t, s_denoised, 'r', 'LineWidth', 0.8); hold on;
-    plot(t, s_clean, 'b', 'LineWidth', 0.5);
-    title(['Denoised (SNR Post: ' num2str(snr_post, '%.2f') ' dB)']);
-    ylabel('Amplitude'); xlabel('Time (s)'); legend('Denoised', 'Clean');
-    grid on; xlim([1 1.5]);
-
-    % Frequency domain magnitude spectra
-    [f_vec, P_noisy] = get_spectrum(s_noisy, fs);
-    [~, P_denoised] = get_spectrum(s_denoised, fs);
-    [~, P_clean] = get_spectrum(s_clean, fs);
-
-    subplot(3, 2, 3);
-    plot(f_vec/1000, P_noisy, 'Color', [0.7 0.7 0.7]); hold on;
-    plot(f_vec/1000, P_clean, 'b');
-    title('Frequency Spectrum (Noisy)');
-    ylabel('|X(e^{j\omega})| (dB)'); xlabel('Frequency (kHz)');
-    grid on; xlim([0 fs/2000]);
-
-    subplot(3, 2, 4);
-    plot(f_vec/1000, P_denoised, 'r'); hold on;
-    plot(f_vec/1000, P_clean, 'b');
-    title(['Frequency Spectrum (Denoised) - Gain: ' num2str(gain, '%.2f') ' dB']);
-    ylabel('|X(e^{j\omega})| (dB)'); xlabel('Frequency (kHz)');
-    grid on; xlim([0 fs/2000]);
-
-    % Spectrogram analysis
-    subplot(3, 2, 5);
-    draw_spec(s_noisy, fs, [noise_name ' Noisy Spectrogram']);
-    
-    subplot(3, 2, 6);
-    draw_spec(s_denoised, fs, [noise_name ' Denoised Spectrogram']);
-
-    sgtitle(['DSP Speech Denoising Project: ' noise_name ' Analysis'], 'FontSize', 16, 'FontWeight', 'bold');
+if ~isfile(file_clean) || ~isfile(file_noisy)
+    error('Files missing! Check the data/ folder.');
 end
 
-function [f, P1] = get_spectrum(x, fs)
-    L = length(x);
-    Y = fft(x);
-    P2 = abs(Y/L);
-    P1 = P2(1:floor(L/2)+1);
-    P1(2:end-1) = 2*P1(2:end-1);
-    f = fs*(0:(floor(L/2)))/L;
-    P1 = 20*log10(P1 + eps);
+[x_ref_orig, fs_r] = audioread(file_clean);
+[x_noiz_orig, fs_n] = audioread(file_noisy);
+
+% Resample to project standard 16 kHz
+x_ref = resample(x_ref_orig, fs_target, fs_r);
+x_noiz = resample(x_noiz_orig, fs_target, fs_n);
+
+% Align signal lengths
+L = min(length(x_ref), length(x_noiz));
+x_c = x_ref(1:L);
+x_n = x_noiz(1:L);
+
+fprintf('=== WHITE NOISE DENOISING (Task 3 & 4) ===\n');
+
+% 2. PRE-FILTERING: HISS SUPPRESSION
+% White noise energy is constant across all frequencies.
+% A 6th order Butterworth LPF at 5.5kHz removes the harsh high-frequency hiss.
+[b_lp, a_lp] = butter(6, 5500/(fs_target/2), 'low');
+x_pre = filtfilt(b_lp, a_lp, x_n);
+
+% 3. STRATEGY: WIENER FILTERING IN STFT DOMAIN (Task 3)
+win_len = 512; hop_len = 256; nfft = 512;
+win = hamming(win_len);
+
+[S, f_stft, t_stft] = stft(x_pre, fs_target, 'Window', win, 'OverlapLength', win_len - hop_len, 'FFTLength', nfft);
+Mag = abs(S);
+Ph  = angle(S);
+
+% Stationary Noise Estimation
+% Since white noise is stationary, we estimate noise power across all frames
+noise_power = median(Mag.^2, 2); 
+
+% Compute Wiener Gain: G = P_sig / (P_sig + P_noise)
+Gain = Mag.^2 ./ (Mag.^2 + noise_power + eps);
+Mag_wiener = Mag .* Gain;
+
+% 4. SPECTRAL GATING
+% Soft thresholding to suppress residual noise floor during speech pauses
+gate_threshold = 0.06 * max(Mag_wiener(:));
+gate_mask = Mag_wiener > gate_threshold;
+Mag_denoised = Mag_wiener .* gate_mask;
+
+% 5. RECONSTRUCTION (ISTFT)
+S_new = Mag_denoised .* exp(1j * Ph);
+y_raw = istft(S_new, fs_target, 'Window', win, 'OverlapLength', win_len - hop_len, 'FFTLength', nfft);
+y_raw = real(y_raw);
+
+% Critical Fix: Length Alignment
+if length(y_raw) >= L
+    y_final = y_raw(1:L);
+else
+    y_final = [y_raw; zeros(L - length(y_raw), 1)];
 end
 
-function draw_spec(x, fs, t_title)
-    [s, f, t] = spectrogram(x, hamming(512), 256, 512, fs, 'yaxis');
-    imagesc(t, f/1000, 20*log10(abs(s)+eps));
-    axis xy; colormap jet; caxis([-90 0]);
-    title(t_title); ylabel('Freq (kHz)'); xlabel('Time (s)');
-    colorbar;
-end
+% 6. POST-PROCESSING: CLARITY RECOVERY
+% High-frequency "Air" boost to restore natural speech brilliance after LPF
+[b_air, a_air] = butter(2, 4000/(fs_target/2), 'high');
+air_signal = filtfilt(b_air, a_air, y_final);
+y_final = y_final + 0.15 * air_signal;
+
+% Final Normalization
+y_final = y_final / (max(abs(y_final)) + eps) * 0.95;
+
+% 7. METRICS & REPORTING (Task 2, 5, 6)
+snr_pre = 10 * log10(sum(x_c.^2) / (sum((x_c - x_n).^2) + eps));
+snr_post = 10 * log10(sum(x_c.^2) / (sum((x_c - y_final).^2) + eps));
+
+fprintf('Results (White Noise):\n');
+fprintf('  Input SNR : %.2f dB\n', snr_pre);
+fprintf('  Output SNR: %.2f dB\n', snr_post);
+fprintf('  SNR Gain  : +%.2f dB\n', snr_post - snr_pre);
+
+audiowrite('outputs/wavs/denoised_white.wav', y_final, fs_target);
+generate_report_plots(x_c, x_n, y_final, fs_target, 'White Noise');
+saveas(gcf, 'outputs/plots/report_white.png');

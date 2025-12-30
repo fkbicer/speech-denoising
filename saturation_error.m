@@ -18,7 +18,7 @@ names = {
     'Street'
 };
 
-thr = 0.999; % -1/+1 yapışmasını yakalamak için
+thr = 0.999;
 
 for k = 1:numel(files)
     [x, fs] = audioread(files{k});

@@ -4,7 +4,7 @@ clc; clear; close all;
 [xn, ~ ] = audioread('data/clean_white_5dB.wav');
 
 start_sec = 1.0;
-win_sec   = 0.02; % 20 ms daha iyi
+win_sec   = 0.02;
 i0 = round(start_sec*fs)+1;
 i1 = i0 + round(win_sec*fs)-1;
 
