@@ -75,9 +75,9 @@ function denoise_pink()
     end
 
     % Artık hata vermeyecektir
-    % Klasör kontrolü ve kayıt
+    % Klasör kontrolü ve kayıtspectrograms of at least two denoised signals,
     if ~exist('outputs', 'dir'), mkdir('outputs'); end
-    output_name = 'outputs/PINK_CLEANED_FINAL.wav';
+    output_name = 'outputs/denoised_pink.wav';
     
     audiowrite(output_name, y_denoised, fs);
     fprintf('\nSonuç buraya kaydedildi: %s\n', output_name);
