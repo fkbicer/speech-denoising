@@ -1,94 +1,99 @@
-function denoise_pink()
-    clc; clear; close all;
+clc; clear; close all;
 
-    % 1. AYARLAR VE DOSYA OKUMA
-    file_noisy = 'data/clean_pink_5dB.wav'; 
-    file_clean_ref = 'data/clean_speech.wav'; 
-    fs_target = 16000;
+% 1. SETUP & LOADING (Task 1)
+fs_target = 16000;
+file_clean = 'data/clean_speech.wav';
+file_noisy = 'data/clean_pink_5dB.wav'; 
 
-    if ~isfile(file_noisy), error('Gürültülü dosya bulunamadı!'); end
-    [x_noisy, fs] = audioread(file_noisy);
-    if fs ~= fs_target, x_noisy = resample(x_noisy, fs_target, fs); fs = fs_target; end
+% Ensure output directories exist
+if ~exist('outputs/wavs', 'dir'), mkdir('outputs/wavs'); end
+if ~exist('outputs/plots', 'dir'), mkdir('outputs/plots'); end
 
-    % 2. ÖN İŞLEME (Pre-emphasis)
-    pre_emph = [1, -0.97];
-    x_pre = filter(pre_emph, 1, x_noisy);
-
-    % 3. STFT PARAMETRELERİ
-    win_len = 512;
-    hop_len = 256;
-    nfft = 1024;
-    win = hamming(win_len, 'periodic');
-
-    % Spektrogram hesapla
-    [S, f, t] = stft(x_pre, fs, 'Window', win, 'OverlapLength', win_len - hop_len, 'FFTLength', nfft);
-    mag_noisy = abs(S);
-    phase_noisy = angle(S);
-
-    % 4. GÜRÜLTÜ TAHMİNİ
-    noise_frames = round(0.3 * fs / hop_len);
-    noise_mu = mean(mag_noisy(:, 1:noise_frames), 2); 
-
-    % 5. GELİŞTİRİLMİŞ WIENER FİLTRELEME
-    mag_sq = mag_noisy.^2;
-    noise_sq = noise_mu.^2;
-    
-    % Gain (Kazanç) hesaplama - Gürültü baskılama faktörünü 1.5 olarak bıraktık
-    gain = max(0.01, (mag_sq - 1.5 * noise_sq) ./ mag_sq); 
-    gain = movmedian(gain, 3, 2); 
-
-    % Uygulama
-    mag_denoised = mag_noisy .* gain;
-
-    % 6. REKONSTRÜKSİYON (ISTFT)
-    S_clean = mag_denoised .* exp(1j * phase_noisy);
-    x_res = istft(S_clean, fs, 'Window', win, 'OverlapLength', win_len - hop_len, 'FFTLength', nfft);
-
-    % 7. SON İŞLEME
-    % ÖNEMLİ: ISTFT sonrası oluşabilecek hayali kısımları temizle
-    y_denoised = real(x_res); 
-    
-    % De-emphasis (Ön işlemi geri al)
-    y_denoised = filter(1, pre_emph, y_denoised);
-    
-    % Rumble cut (Düşük frekans temizliği)
-    [b, a] = butter(4, 150/(fs/2), 'high');
-    y_denoised = filtfilt(b, a, y_denoised);
-
-    % Normalizasyon
-    y_denoised = y_denoised / (max(abs(y_denoised)) + eps) * 0.95;
-
-    % 8. ANALİZ VE KAYIT
-    if isfile(file_clean_ref)
-        [x_c, fs_c] = audioread(file_clean_ref);
-        if fs_c ~= fs, x_c = resample(x_c, fs, fs_c); end
-        L = min([length(x_c), length(x_noisy), length(y_denoised)]);
-        
-        snr_pre = 10 * log10(sum(x_c(1:L).^2) / (sum((x_c(1:L) - x_noisy(1:L)).^2) + eps));
-        snr_post = 10 * log10(sum(x_c(1:L).^2) / (sum((x_c(1:L) - y_denoised(1:L)).^2) + eps));
-        
-        fprintf('\nPink Noise Denoising Tamamlandı\n');
-        fprintf('-------------------------------\n');
-        fprintf('Giriş SNR: %.2f dB\n', snr_pre);
-        fprintf('Çıkış SNR: %.2f dB\n', snr_post);
-        fprintf('Kazanç:    +%.2f dB\n', snr_post - snr_pre);
-    end
-
-    % Artık hata vermeyecektir
-    % Klasör kontrolü ve kayıtspectrograms of at least two denoised signals,
-    if ~exist('outputs', 'dir'), mkdir('outputs'); end
-    output_name = 'outputs/denoised_pink.wav';
-    
-    audiowrite(output_name, y_denoised, fs);
-    fprintf('\nSonuç buraya kaydedildi: %s\n', output_name);
-    
-    % Görselleştirme
-    figure('Color', 'w', 'Name', 'Pink Noise Denoising Result');
-    subplot(2,1,1);
-    imagesc(t, f/1000, 20*log10(mag_noisy + eps)); axis xy; title('Noisy Spectrogram (Pink)');
-    colorbar; caxis([-80 0]); ylabel('Freq (kHz)');
-    
-    subplot(2,1,2);
-    imagesc(t, f/1000, 20*log10(mag_denoised + eps)); axis xy; title('Cleaned Spectrogram');
-    colorbar; caxis([-80 0]); ylabel('Freq (kHz)'); xlabel('Time (s)');
+if ~isfile(file_clean) || ~isfile(file_noisy)
+    error('Input files not found! Please check the data/ directory.');
 end
+
+[x_ref_orig, fs_r] = audioread(file_clean);
+[x_noiz_orig, fs_n] = audioread(file_noisy);
+
+% Resample signals to project standard (16 kHz)
+x_ref = resample(x_ref_orig, fs_target, fs_r);
+x_noiz = resample(x_noiz_orig, fs_target, fs_n);
+
+% Synchronize signal lengths
+L = min(length(x_ref), length(x_noiz));
+x_c = x_ref(1:L);
+x_n = x_noiz(1:L);
+
+fprintf('=== PINK NOISE DENOISING (Task 3 & 4) ===\n');
+
+% 2. PRE-PROCESSING: PRE-EMPHASIS
+% Pink noise has a 1/f characteristic with heavy low-frequency energy.
+% Pre-emphasis flattens the spectrum by boosting high frequencies.
+pre_emph_coeff = [1, -0.97];
+x_pre = filter(pre_emph_coeff, 1, x_n);
+
+% 3. STRATEGY: WIENER FILTERING IN STFT DOMAIN (Task 3)
+win_len = 512; hop_len = 256; nfft = 1024;
+win = hamming(win_len, 'periodic');
+
+[S, f, t] = stft(x_pre, fs_target, 'Window', win, 'OverlapLength', win_len - hop_len, 'FFTLength', nfft);
+mag_noisy = abs(S);
+phase_noisy = angle(S);
+
+% Noise Estimation from the initial silent period
+noise_est = mean(mag_noisy(:, 1:12), 2); 
+
+% Wiener Gain Calculation
+mag_sq = mag_noisy.^2;
+noise_sq = noise_est.^2;
+gain_factor = 1.6; % Aggressiveness factor for Pink noise
+
+% Compute the Wiener gain function: G = P_sig / (P_sig + P_noise)
+gain = max(0.02, (mag_sq - gain_factor * noise_sq) ./ (mag_sq + eps));
+gain = movmedian(gain, 3, 2); % Spectral smoothing to reduce artifacts
+
+% Apply gain and transform back to time domain
+mag_denoised = mag_noisy .* gain;
+S_clean = mag_denoised .* exp(1j * phase_noisy);
+x_res = istft(S_clean, fs_target, 'Window', win, 'OverlapLength', win_len - hop_len, 'FFTLength', nfft);
+
+% 4. POST-PROCESSING & RECONSTRUCTION
+y_raw = real(x_res);
+
+% De-emphasis: Restore the natural tonal balance of the speech
+y_deemp = filter(1, pre_emph_coeff, y_raw);
+
+% Critical Fix: Length Alignment
+if length(y_deemp) >= L
+    y_final = y_deemp(1:L);
+else
+    y_final = [y_deemp; zeros(L - length(y_deemp), 1)];
+end
+
+% 150Hz High-pass filter to remove residual low-end rumble
+[b_hp, a_hp] = butter(4, 150/(fs_target/2), 'high');
+y_final = filtfilt(b_hp, a_hp, y_final);
+
+% Normalize the output to prevent clipping
+y_final = y_final / (max(abs(y_final)) + eps) * 0.95;
+
+% 5. METRICS & REPORTING (Task 2, 5, 6)
+snr_pre = 10 * log10(sum(x_c.^2) / (sum((x_c - x_n).^2) + eps));
+snr_post = 10 * log10(sum(x_c.^2) / (sum((x_c - y_final).^2) + eps));
+
+fprintf('Results (Pink Noise):\n');
+fprintf('  Input SNR : %.2f dB\n', snr_pre);
+fprintf('  Output SNR: %.2f dB\n', snr_post);
+fprintf('  SNR Gain  : +%.2f dB\n', snr_post - snr_pre);
+
+% Save the cleaned audio file
+audiowrite('outputs/wavs/denoised_pink.wav', y_final, fs_target);
+
+% Generate comparative report plots
+generate_report_plots(x_c, x_n, y_final, fs_target, 'Pink Noise');
+
+% Save the report figure
+saveas(gcf, 'outputs/plots/report_pink.png');
+
+fprintf('\n>>> Process Complete: Output files saved to outputs/wavs/ and outputs/plots/\n');

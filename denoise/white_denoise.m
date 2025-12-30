@@ -1,150 +1,70 @@
-%% white_denoise.m  (Optimized White Noise Strategy)
-clc; clear; close all;
+function generate_report_plots(s_clean, s_noisy, s_denoised, fs, noise_name)
+    % Calculate SNR based on Task 5 formula
+    snr_pre = 10 * log10(sum(s_clean.^2) / sum((s_clean - s_noisy).^2));
+    snr_post = 10 * log10(sum(s_clean.^2) / sum((s_clean - s_denoised.^2)));
+    gain = snr_post - snr_pre;
 
-%% Paths
-in_clean = 'data/clean_speech.wav';
-in_noisy = 'data/clean_white_5dB.wav';
+    fig = figure('Name', ['Report Analysis - ' noise_name], 'Color', 'w', 'Position', [50 50 1200 900]);
+    t = (0:length(s_clean)-1)/fs;
 
-scriptDir = fileparts(mfilename('fullpath'));
-outdir = fullfile(scriptDir, 'outputs');
-if exist(outdir,'file')==2
-    error('"outputs" exists as a FILE.');
+    % Time domain waveforms
+    subplot(3, 2, 1);
+    plot(t, s_noisy, 'Color', [0.7 0.7 0.7]); hold on;
+    plot(t, s_clean, 'b', 'LineWidth', 0.8);
+    title([noise_name ' - Time Domain (Noisy vs Clean)']);
+    ylabel('Amplitude'); xlabel('Time (s)'); legend('Noisy', 'Clean');
+    grid on; xlim([1 1.5]);
+
+    subplot(3, 2, 2);
+    plot(t, s_denoised, 'r', 'LineWidth', 0.8); hold on;
+    plot(t, s_clean, 'b', 'LineWidth', 0.5);
+    title(['Denoised (SNR Post: ' num2str(snr_post, '%.2f') ' dB)']);
+    ylabel('Amplitude'); xlabel('Time (s)'); legend('Denoised', 'Clean');
+    grid on; xlim([1 1.5]);
+
+    % Frequency domain magnitude spectra
+    [f_vec, P_noisy] = get_spectrum(s_noisy, fs);
+    [~, P_denoised] = get_spectrum(s_denoised, fs);
+    [~, P_clean] = get_spectrum(s_clean, fs);
+
+    subplot(3, 2, 3);
+    plot(f_vec/1000, P_noisy, 'Color', [0.7 0.7 0.7]); hold on;
+    plot(f_vec/1000, P_clean, 'b');
+    title('Frequency Spectrum (Noisy)');
+    ylabel('|X(e^{j\omega})| (dB)'); xlabel('Frequency (kHz)');
+    grid on; xlim([0 fs/2000]);
+
+    subplot(3, 2, 4);
+    plot(f_vec/1000, P_denoised, 'r'); hold on;
+    plot(f_vec/1000, P_clean, 'b');
+    title(['Frequency Spectrum (Denoised) - Gain: ' num2str(gain, '%.2f') ' dB']);
+    ylabel('|X(e^{j\omega})| (dB)'); xlabel('Frequency (kHz)');
+    grid on; xlim([0 fs/2000]);
+
+    % Spectrogram analysis
+    subplot(3, 2, 5);
+    draw_spec(s_noisy, fs, [noise_name ' Noisy Spectrogram']);
+    
+    subplot(3, 2, 6);
+    draw_spec(s_denoised, fs, [noise_name ' Denoised Spectrogram']);
+
+    sgtitle(['DSP Speech Denoising Project: ' noise_name ' Analysis'], 'FontSize', 16, 'FontWeight', 'bold');
 end
-if ~exist(outdir,'dir'), mkdir(outdir); end
 
-out_wav = fullfile(outdir,'denoised_white.wav');
-
-%% Load
-[s, fs]  = audioread(in_clean); s = s(:,1);
-[x, fs2] = audioread(in_noisy); x = x(:,1);
-assert(fs==fs2,'Sampling rate mismatch');
-
-N = min(length(s),length(x));
-s = s(1:N); 
-x = x(1:N);
-
-%% SNR
-snr_db = @(c,y) 10*log10(sum(c.^2)/(sum((y-c).^2)+1e-12));
-snr_in = snr_db(s,x);
-
-fprintf('WHITE | Input SNR: %.2f dB\n', snr_in);
-
-%% ===================== DENOISING PIPELINE =====================
-
-%% 1) Pre-filter: LPF to suppress hiss
-[b_lp,a_lp] = butter(6, 5500/(fs/2), 'low');
-x_lpf = filtfilt(b_lp, a_lp, x);
-
-%% 2) STFT Analysis
-win  = hamming(512);
-hop  = 256;
-nfft = 512;
-
-[S,~,~] = stft(x_lpf, fs, ...
-    'Window', win, ...
-    'OverlapLength', hop, ...
-    'FFTLength', nfft);
-
-Mag = abs(S);
-Ph  = angle(S);
-
-%% 3) Wiener filtering in magnitude domain
-% ---- Noise power estimate (time-wise minimum) ----
-noise_power = median(Mag.^2, 2);   % stationary white noise assumption
-
-% ---- Wiener gain ----
-Gain = Mag.^2 ./ (Mag.^2 + noise_power);
-
-% ---- Apply Wiener filtering ----
-Mag_w = Mag .* Gain;
-
-%% 4) Soft spectral gating
-thresh = 0.06 * max(Mag_w(:));
-mask = Mag_w > thresh;
-Mag_d = Mag_w .* mask;
-
-%% 5) Reconstruct (phase preserved)
-S_new = Mag_d .* exp(1j*Ph);
-y_tmp = istft(S_new, fs, ...
-    'Window', win, ...
-    'OverlapLength', hop, ...
-    'FFTLength', nfft);
-
-y_tmp = real(y_tmp);
-
-%% 6) Air boost (clarity recovery)
-[b_air,a_air] = butter(2, 4000/(fs/2), 'high');
-air = filtfilt(b_air, a_air, y_tmp);
-y = y_tmp + 0.15*air;
-
-%% 7) Length + normalize
-if length(y) > N
-    y = y(1:N);
-elseif length(y) < N
-    y = [y; zeros(N - length(y), 1)];
+function [f, P1] = get_spectrum(x, fs)
+    L = length(x);
+    Y = fft(x);
+    P2 = abs(Y/L);
+    P1 = P2(1:floor(L/2)+1);
+    P1(2:end-1) = 2*P1(2:end-1);
+    f = fs*(0:(floor(L/2)))/L;
+    P1 = 20*log10(P1 + eps);
 end
-mx = max(abs(y))+1e-12;
-y = y/mx*0.95;
 
-%% ===================== METRICS =====================
-snr_out = snr_db(s,y);
-fprintf('WHITE | Output SNR: %.2f dB | Gain: %+0.2f dB\n', ...
-    snr_out, snr_out-snr_in);
-
-%% ===================== EXPORT =====================
-audiowrite(out_wav, y, fs);
-disp(['Saved: ' out_wav]);
-
-%% ===================== PLOTS =====================
-plot_analysis_pair(s, x, fs, 'WHITE - Before');
-plot_analysis_pair(s, y, fs, 'WHITE - After');
-
-%% ==================================================
-%% ===================== Local function =====================
-function plot_analysis_pair(clean, sig, fs, tag)
-    % Time zoom
-    start_sec = 1.0;
-    win_sec   = 0.02; % 20 ms
-
-    i0 = round(start_sec*fs) + 1;
-    i0 = max(1, min(i0, length(clean)));
-    i1 = min(i0 + round(win_sec*fs) - 1, length(clean));
-    t = (0:(i1-i0))/fs;
-
-    figure('Name',['TimeZoom ' tag]);
-    plot(t, clean(i0:i1), 'LineWidth', 1.2); hold on;
-    plot(t, sig(i0:i1),   'LineWidth', 1.0);
-    grid on;
-    xlabel('Time (s)'); ylabel('Amplitude');
-    title(['Clean vs Signal (' num2str(win_sec*1000) ' ms) - ' tag]);
-    legend('Clean','Signal','Location','best');
-
-    % FFT magnitude
-    Nfft = 65536;
-    f = (0:Nfft/2) * (fs/Nfft);
-
-    C = fft(clean, Nfft);
-    S = fft(sig,   Nfft);
-
-    MagC = 20*log10(abs(C(1:Nfft/2+1)) + 1e-12);
-    MagS = 20*log10(abs(S(1:Nfft/2+1)) + 1e-12);
-
-    figure('Name',['FFT ' tag]);
-    plot(f, MagC); hold on;
-    plot(f, MagS);
-    grid on; xlim([0 fs/2]);
-    xlabel('Frequency (Hz)');
-    ylabel('Magnitude (dB)');
-    title(['FFT Magnitude - ' tag]);
-    legend('Clean','Signal','Location','best');
-
-    % Spectrogram
-    figure('Name',['Spec ' tag]);
-    subplot(2,1,1);
-    spectrogram(clean, 512, 384, 1024, fs, 'yaxis');
-    title(['Spectrogram - Clean (' tag ')']);
-
-    subplot(2,1,2);
-    spectrogram(sig, 512, 384, 1024, fs, 'yaxis');
-    title(['Spectrogram - Signal (' tag ')']);
+function draw_spec(x, fs, t_title)
+    [s, f, t] = spectrogram(x, hamming(512), 256, 512, fs, 'yaxis');
+    imagesc(t, f/1000, 20*log10(abs(s)+eps));
+    axis xy; colormap jet; caxis([-90 0]);
+    title(t_title); ylabel('Freq (kHz)'); xlabel('Time (s)');
+    colorbar;
 end
